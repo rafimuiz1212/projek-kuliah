@@ -54,8 +54,9 @@ export default function App() {
   const [odps, setOdps] = useState<ODP[]>([]);
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number }>(DEFAULT_CENTER);
   const [coverage, setCoverage] = useState<CoverageResult | null>(null);
+  const [lockedTargetOdp, setLockedTargetOdp] = useState<ODP | null>(null);
   const [customerModalOdp, setCustomerModalOdp] = useState<ODP | null>(null);
-  const [measurementMode, setMeasurementMode] = useState<"road" | "straight" | "manual">("road");
+  const [measurementMode, setMeasurementMode] = useState<"road" | "manual">("road");
   const [manualPoints, setManualPoints] = useState<{ lat: number; lng: number }[]>([]);
   const [loading, setLoading] = useState<boolean>(false);
   const [checking, setChecking] = useState<boolean>(false);
@@ -85,7 +86,7 @@ export default function App() {
   const manualMarkersRef = useRef<L.Marker[]>([]);
 
   // Refs to avoid stale closure issues in Leaflet events
-  const measurementModeRef = useRef<"road" | "straight" | "manual">("road");
+  const measurementModeRef = useRef<"road" | "manual">("road");
   const manualPointsRef = useRef<{ lat: number; lng: number }[]>([]);
 
   useEffect(() => {
@@ -95,6 +96,11 @@ export default function App() {
   useEffect(() => {
     manualPointsRef.current = manualPoints;
   }, [manualPoints]);
+
+  const lockedTargetOdpRef = useRef<ODP | null>(null);
+  useEffect(() => {
+    lockedTargetOdpRef.current = lockedTargetOdp;
+  }, [lockedTargetOdp]);
 
   // KMZ / KML Import state
   const [kmzImporting, setKmzImporting] = useState<boolean>(false);
@@ -445,16 +451,27 @@ export default function App() {
   };
 
   // Check coverage backend API call
-  const checkCoverage = async (lat: number, lng: number, modeOverride?: "road" | "straight" | "manual") => {
+  const checkCoverage = async (
+    lat: number, 
+    lng: number, 
+    modeOverride?: "road" | "manual",
+    targetOdpOverride?: ODP | null
+  ) => {
     if (modeOverride === "manual") return; // manual measurements are handled pure client-side
     setChecking(true);
     try {
       const activeMode = modeOverride || measurementMode;
       if (activeMode === "manual") return;
+      const targetId = targetOdpOverride !== undefined ? targetOdpOverride?.id : lockedTargetOdpRef.current?.id;
       const res = await fetch("/api/check-coverage", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ lat, lng, mode: activeMode })
+        body: JSON.stringify({ 
+          lat, 
+          lng, 
+          mode: activeMode,
+          targetOdpId: targetId
+        })
       });
       if (res.ok) {
         const result = await res.json();
@@ -1483,12 +1500,12 @@ export default function App() {
     checkCoverage(DEFAULT_CENTER.lat, DEFAULT_CENTER.lng);
   }, []);
 
-  // Sync userCoords with coverage check whenever coordinates, measurementMode, or ODP database changes
+  // Sync userCoords with coverage check whenever coordinates, measurementMode, ODP database, or target lock changes
   useEffect(() => {
     if (userCoords && measurementMode !== "manual") {
-      checkCoverage(userCoords.lat, userCoords.lng, measurementMode);
+      checkCoverage(userCoords.lat, userCoords.lng, measurementMode, lockedTargetOdp);
     }
-  }, [userCoords.lat, userCoords.lng, measurementMode, odps.length]);
+  }, [userCoords.lat, userCoords.lng, measurementMode, odps.length, lockedTargetOdp?.id]);
 
   // Initialize and synchronize Leaflet Map
   useEffect(() => {
@@ -1724,6 +1741,24 @@ export default function App() {
         marker.closePopup();
       };
       popupDiv.appendChild(custBtn);
+
+      // Kunci ODP Target / Tarik dari ODP Ini button
+      const isCurrentlyLocked = lockedTargetOdpRef.current?.id === odp.id;
+      const targetLockBtn = document.createElement("button");
+      targetLockBtn.className = `w-full mt-1.5 ${isCurrentlyLocked ? 'bg-amber-600 hover:bg-amber-700' : 'bg-indigo-600 hover:bg-indigo-700'} text-white font-bold py-1.5 px-2 rounded-lg text-[10px] transition-colors cursor-pointer text-center block shadow-xs`;
+      targetLockBtn.innerText = isCurrentlyLocked ? "🔓 Lepas Target (Auto Terdekat)" : "🎯 Tarik Kabel dari ODP Ini";
+      targetLockBtn.onclick = (event) => {
+        event.stopPropagation();
+        if (isCurrentlyLocked) {
+          setLockedTargetOdp(null);
+          checkCoverage(userCoords.lat, userCoords.lng, measurementMode, null);
+        } else {
+          setLockedTargetOdp(odp);
+          checkCoverage(userCoords.lat, userCoords.lng, measurementMode, odp);
+        }
+        marker.closePopup();
+      };
+      popupDiv.appendChild(targetLockBtn);
 
       // Copy coordinates button
       const button = document.createElement("button");
@@ -2255,6 +2290,27 @@ export default function App() {
 
                                     <button
                                       type="button"
+                                      onClick={() => {
+                                        if (lockedTargetOdp?.id === odp.id) {
+                                          setLockedTargetOdp(null);
+                                          checkCoverage(userCoords.lat, userCoords.lng, measurementMode, null);
+                                        } else {
+                                          setLockedTargetOdp(odp);
+                                          checkCoverage(userCoords.lat, userCoords.lng, measurementMode, odp);
+                                        }
+                                      }}
+                                      className={`px-2 py-1 border rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 ${
+                                        lockedTargetOdp?.id === odp.id
+                                          ? "bg-amber-500 hover:bg-amber-600 text-white border-amber-600"
+                                          : "bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-200"
+                                      }`}
+                                      title={lockedTargetOdp?.id === odp.id ? "Lepas kunci ODP ini" : "Kunci tarikan dropcore dari ODP ini"}
+                                    >
+                                      <span>{lockedTargetOdp?.id === odp.id ? "🔓 Batal" : "🎯 Tarik"}</span>
+                                    </button>
+
+                                    <button
+                                      type="button"
                                       onClick={() => handleFocusMainOdp(odp)}
                                       className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold transition-all cursor-pointer flex items-center gap-1 shadow-xs"
                                       title="Fokus dan perbesar lokasi ODP ini di peta"
@@ -2356,35 +2412,32 @@ export default function App() {
 
                 {/* METODE PENGUKURAN */}
                 <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 shadow-sm shadow-slate-100/40">
-                  <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5 uppercase tracking-wider">
-                    <Compass className="text-blue-600 w-4 h-4 animate-pulse" /> Metode Pengukuran Dropcore
-                  </span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700 flex items-center gap-1.5 uppercase tracking-wider">
+                      <Compass className="text-blue-600 w-4 h-4" /> Metode Pengukuran Dropcore
+                    </span>
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                      Rute Jalan Aktif
+                    </span>
+                  </div>
                   
-                  <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
                       onClick={() => setMeasurementMode("road")}
-                      className={`p-2 rounded-lg border text-left flex flex-col justify-between transition-all cursor-pointer h-full ${
+                      className={`p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer h-full ${
                         measurementMode === "road"
-                          ? "bg-blue-50/40 border-blue-500 text-blue-950 shadow-sm shadow-blue-100/50"
-                          : "bg-slate-50 border-slate-200 text-slate-650 hover:bg-slate-100/50"
+                          ? "bg-blue-50/70 border-blue-500 text-blue-950 shadow-sm ring-1 ring-blue-400"
+                          : "bg-slate-50 border-slate-200 text-slate-650 hover:bg-slate-100/70"
                       }`}
                     >
-                      <span className="text-[10px] font-extrabold text-slate-800">🚶 Rute OSRM</span>
-                      <span className="text-[8px] text-slate-400 font-medium leading-tight mt-0.5">Jalan/Gang</span>
-                    </button>
-                    
-                    <button
-                      type="button"
-                      onClick={() => setMeasurementMode("straight")}
-                      className={`p-2 rounded-lg border text-left flex flex-col justify-between transition-all cursor-pointer h-full ${
-                        measurementMode === "straight"
-                          ? "bg-blue-50/40 border-blue-500 text-blue-950 shadow-sm shadow-blue-100/50"
-                          : "bg-slate-50 border-slate-200 text-slate-650 hover:bg-slate-100/50"
-                      }`}
-                    >
-                      <span className="text-[10px] font-extrabold text-slate-800">📏 Tarik Lurus</span>
-                      <span className="text-[8px] text-slate-400 font-medium leading-tight mt-0.5">300m Udara</span>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-extrabold text-slate-900">🚶 Rute Jalan OSRM</span>
+                        {measurementMode === "road" && <Check className="w-3.5 h-3.5 text-blue-600" />}
+                      </div>
+                      <span className="text-[9px] text-slate-500 font-medium leading-tight mt-1">
+                        Mengikuti kontur jalan & gang riil (Akurat)
+                      </span>
                     </button>
 
                     <button
@@ -2393,14 +2446,19 @@ export default function App() {
                         setMeasurementMode("manual");
                         setManualPoints([]);
                       }}
-                      className={`p-2 rounded-lg border text-left flex flex-col justify-between transition-all cursor-pointer h-full ${
+                      className={`p-2.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer h-full ${
                         measurementMode === "manual"
-                          ? "bg-purple-50/40 border-purple-500 text-purple-950 shadow-sm shadow-purple-100/50"
-                          : "bg-slate-50 border-slate-200 text-slate-650 hover:bg-slate-100/50"
+                          ? "bg-purple-50/70 border-purple-500 text-purple-950 shadow-sm ring-1 ring-purple-400"
+                          : "bg-slate-50 border-slate-200 text-slate-650 hover:bg-slate-100/70"
                       }`}
                     >
-                      <span className="text-[10px] font-extrabold text-purple-800">✏️ Klik Manual</span>
-                      <span className="text-[8px] text-purple-400 font-medium leading-tight mt-0.5">Rute Kustom</span>
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-extrabold text-purple-900">✏️ Klik Manual</span>
+                        {measurementMode === "manual" && <Check className="w-3.5 h-3.5 text-purple-600" />}
+                      </div>
+                      <span className="text-[9px] text-slate-500 font-medium leading-tight mt-1">
+                        Tentukan rute kustom tiang ke tiang
+                      </span>
                     </button>
                   </div>
                 </div>
@@ -2747,12 +2805,54 @@ export default function App() {
                             </div>
                           </div>
 
+                          {/* LOCKED TARGET ODP BANNER */}
+                          {lockedTargetOdp && (
+                            <div className="bg-amber-100/90 border border-amber-300 text-amber-950 rounded-xl p-2.5 flex items-center justify-between gap-2 text-xs shadow-xs">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm">🎯</span>
+                                <div>
+                                  <span className="font-bold block text-amber-900">ODP Target Terkunci Manual</span>
+                                  <span className="text-[10px] text-amber-800 font-mono">{lockedTargetOdp.name}</span>
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLockedTargetOdp(null);
+                                  checkCoverage(userCoords.lat, userCoords.lng, measurementMode, null);
+                                }}
+                                className="px-2 py-1 bg-white hover:bg-amber-50 text-amber-800 border border-amber-300 rounded-lg text-[10px] font-bold cursor-pointer transition-colors shadow-xs"
+                              >
+                                Auto Terdekat
+                              </button>
+                            </div>
+                          )}
+
+                          {/* ANTI-DETOUR BADGE */}
+                          {coverage.isDetourAvoided && (
+                            <div className="bg-blue-100/90 border border-blue-300 text-blue-950 rounded-xl p-2.5 text-xs space-y-1 shadow-xs">
+                              <div className="flex items-center justify-between font-bold text-blue-900">
+                                <span className="flex items-center gap-1.5">
+                                  <span>⚡ Jalur Tiang / Udara Aktif</span>
+                                </span>
+                                <span className="text-[9px] bg-blue-200/80 text-blue-900 px-1.5 py-0.5 rounded font-mono font-bold">
+                                  Anti-Detur Gang
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-blue-800 leading-relaxed">
+                                Rute jalan OSRM sempat memutar ke kanan karena gang/lorong rumah belum terpetakan di OpenStreetMap. Sistem otomatis mengaktifkan tarikan kabel tiang/udara langsung (<strong className="text-blue-950">{coverage.distance}m</strong>) menuju <strong>{coverage.nearestOdp?.name}</strong>.
+                              </p>
+                            </div>
+                          )}
+
                           {/* DETAILS */}
                           {coverage.nearestOdp ? (
                             <div className="space-y-3 text-xs leading-relaxed">
                               <div className="grid grid-cols-2 gap-y-2 text-slate-700">
                                 <div>
-                                  <span className="text-[10px] text-slate-400 block uppercase font-bold">ODP TERDEKAT</span>
+                                  <span className="text-[10px] text-slate-400 block uppercase font-bold">
+                                    {lockedTargetOdp ? "ODP TARGET TERKUNCI" : "ODP TERDEKAT"}
+                                  </span>
                                   <span className="font-extrabold text-slate-900">{coverage.nearestOdp.name}</span>
                                 </div>
                                 <div>
@@ -2761,7 +2861,7 @@ export default function App() {
                                     {coverage.distance} meter
                                   </span>
                                   <span className="text-[9px] text-slate-500 block font-semibold mt-0.5">
-                                    {coverage.isRoadRoute ? "🚶 Rute Aktual (Jalan)" : "📏 Jarak Garis Lurus"}
+                                    🚶 Rute Jalan OSRM (Jalan/Gang)
                                   </span>
                                 </div>
                                 <div className="col-span-2 border-t border-slate-200/60 pt-2 mt-1"></div>

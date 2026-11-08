@@ -30,7 +30,10 @@ export interface CoverageResult {
   userCoords: { lat: number; lng: number };
   nearestOdp: ODP | null;
   distance: number | null;
+  directDistance?: number;
   isRoadRoute?: boolean;
+  isDetourAvoided?: boolean;
+  isTargetLocked?: boolean;
   routeGeometry?: { lat: number; lng: number }[];
   message?: string;
 }

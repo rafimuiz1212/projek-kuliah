@@ -11,7 +11,11 @@ import {
   Radio, 
   MapPin, 
   Info,
-  ShieldAlert
+  Plus,
+  Trash2,
+  Edit2,
+  Check,
+  Loader2
 } from "lucide-react";
 import { ODP, OdpCustomer, CustomerStatus } from "../types";
 
@@ -22,24 +26,47 @@ interface OdpCustomerModalProps {
   onOdpUpdated?: (updatedOdp: ODP) => void;
 }
 
-export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerModalProps) {
+export default function OdpCustomerModal({ odp, isOpen, onClose, onOdpUpdated }: OdpCustomerModalProps) {
+  const [currentOdp, setCurrentOdp] = useState<ODP>(odp);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterStatus, setFilterStatus] = useState<"all" | CustomerStatus | "empty">("all");
+
+  // Form tambah / edit pelanggan manual
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [formError, setFormError] = useState("");
+  const [formSuccess, setFormSuccess] = useState("");
+
+  const [formPort, setFormPort] = useState<number>(1);
+  const [formName, setFormName] = useState("");
+  const [formStatus, setFormStatus] = useState<CustomerStatus>("online");
+  const [formOnuSn, setFormOnuSn] = useState("");
+  const [formOnuModel, setFormOnuModel] = useState("ZTE F609");
+  const [formAddress, setFormAddress] = useState("");
+  const [formPackage, setFormPackage] = useState("30 Mbps Home");
+
+  // Confirm delete customer
+  const [deletingCustomerId, setDeletingCustomerId] = useState<string | null>(null);
+
+  // Sync state if prop changes
+  React.useEffect(() => {
+    setCurrentOdp(odp);
+  }, [odp]);
 
   if (!isOpen) return null;
 
   // Always ensure customers are sorted strictly by port number ascending
-  const customers = [...(odp.customers || [])].sort((a, b) => a.port - b.port);
+  const customers = [...(currentOdp.customers || [])].sort((a, b) => a.port - b.port);
 
   // Status summaries
   const onlineCount = customers.filter(c => c.status === "online").length;
   const losCount = customers.filter(c => c.status === "los").length;
   const offlineCount = customers.filter(c => c.status === "offline").length;
   const dyinggaspCount = customers.filter(c => c.status === "dyinggasp").length;
-  const availablePortsCount = Math.max(0, odp.totalPorts - customers.length);
+  const availablePortsCount = Math.max(0, currentOdp.totalPorts - customers.length);
 
   // Generate complete port list 1..totalPorts strictly matching SmartOLT splitter port order
-  const maxPort = Math.max(odp.totalPorts, ...customers.map(c => c.port || 0));
+  const maxPort = Math.max(currentOdp.totalPorts, ...customers.map(c => c.port || 0));
   const allPorts: { port: number; customer?: OdpCustomer }[] = [];
   for (let portNum = 1; portNum <= maxPort; portNum++) {
     const matchingCustomers = customers.filter(c => c.port === portNum);
@@ -52,6 +79,104 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
     }
   }
   allPorts.sort((a, b) => a.port - b.port);
+
+  // Find first available port for quick adding
+  const firstEmptyPort = allPorts.find(p => !p.customer)?.port || 1;
+
+  // Open add form for a specific port
+  const handleOpenAddForm = (targetPort?: number) => {
+    const p = targetPort || firstEmptyPort;
+    setFormPort(p);
+    setFormName("");
+    setFormStatus("online");
+    setFormOnuSn(`ZTEG${Math.floor(10000000 + Math.random() * 90000000)}`);
+    setFormOnuModel("ZTE F609");
+    setFormAddress("");
+    setFormPackage("30 Mbps Home");
+    setFormError("");
+    setFormSuccess("");
+    setShowAddForm(true);
+  };
+
+  // Submit add new customer to port
+  const handleSaveCustomer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName.trim()) {
+      setFormError("Nama pelanggan wajib diisi.");
+      return;
+    }
+    if (!formPort || formPort < 1 || formPort > currentOdp.totalPorts) {
+      setFormError(`Nomor port harus antara 1 sampai ${currentOdp.totalPorts}.`);
+      return;
+    }
+
+    setIsSubmitting(true);
+    setFormError("");
+
+    try {
+      const res = await fetch(`/api/odps/${encodeURIComponent(currentOdp.id)}/customers`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          port: formPort,
+          name: formName.trim(),
+          status: formStatus,
+          onuSn: formOnuSn.trim() || undefined,
+          onuModel: formOnuModel.trim() || undefined,
+          address: formAddress.trim() || undefined,
+          package: formPackage.trim() || undefined
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const updated = data.odp || {
+          ...currentOdp,
+          customers: [...customers.filter(c => c.port !== formPort), data.customer].sort((a, b) => a.port - b.port),
+          availablePorts: Math.max(0, currentOdp.totalPorts - (customers.filter(c => c.port !== formPort).length + 1))
+        };
+        setCurrentOdp(updated);
+        if (onOdpUpdated) onOdpUpdated(updated);
+        setFormSuccess(`Pelanggan "${formName}" berhasil disambungkan ke Port ${formPort}!`);
+        setTimeout(() => {
+          setShowAddForm(false);
+          setFormSuccess("");
+        }, 1200);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setFormError(err.error || "Gagal menambahkan pelanggan ke port.");
+      }
+    } catch (err: any) {
+      setFormError(`Gagal menghubungi server: ${err.message || String(err)}`);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  // Delete / unplug customer from port
+  const handleDeleteCustomer = async (customerId: string) => {
+    try {
+      const res = await fetch(`/api/odps/${encodeURIComponent(currentOdp.id)}/customers/${encodeURIComponent(customerId)}`, {
+        method: "DELETE"
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const updated = data.odp || {
+          ...currentOdp,
+          customers: customers.filter(c => c.id !== customerId),
+          availablePorts: Math.min(currentOdp.totalPorts, currentOdp.availablePorts + 1)
+        };
+        setCurrentOdp(updated);
+        if (onOdpUpdated) onOdpUpdated(updated);
+        setDeletingCustomerId(null);
+      } else {
+        alert("Gagal menghapus pelanggan dari port.");
+      }
+    } catch (err) {
+      console.error("Gagal menghapus pelanggan:", err);
+      alert("Terjadi kesalahan saat menghapus pelanggan.");
+    }
+  };
 
   // Filtered port list based on search and status
   const filteredPorts = allPorts.filter(({ port, customer }) => {
@@ -93,26 +218,37 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base sm:text-lg font-bold tracking-tight text-white">
-                  Pemetaan Port: {odp.name}
+                  Pemetaan Port: {currentOdp.name}
                 </h2>
                 <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/30 text-[10px] font-bold">
-                  {odp.totalPorts} Port ODP
+                  {currentOdp.totalPorts} Port ODP
                 </span>
               </div>
               <p className="text-xs text-slate-300">
-                Daftar Pelanggan & Status Koneksi Lapangan Berdasarkan SmartOLT
+                Kelola Pelanggan, Status Koneksi ONU & Pemetaan Splitter Port
               </p>
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
-            title="Tutup"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleOpenAddForm()}
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Tambah Pelanggan Manual</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-slate-300 hover:text-white flex items-center justify-center transition-colors cursor-pointer"
+              title="Tutup"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* METRICS & STATUS BANNER */}
@@ -123,7 +259,7 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
               <div>
                 <span className="text-[10px] text-slate-400 block font-bold uppercase">Port Terpakai</span>
                 <span className="text-sm font-extrabold text-slate-800">
-                  {customers.length} / {odp.totalPorts}
+                  {customers.length} / {currentOdp.totalPorts}
                 </span>
               </div>
               <Radio className="w-4 h-4 text-blue-600" />
@@ -218,7 +354,7 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
           </div>
         </div>
 
-        {/* CONTROLS BAR: SEARCH & FILTERS */}
+        {/* CONTROLS BAR: SEARCH, ADD BUTTON & FILTERS */}
         <div className="p-3 sm:px-5 bg-white border-b border-slate-200 flex flex-wrap items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 flex-1 min-w-[240px]">
             <div className="relative flex-1">
@@ -277,7 +413,7 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
                   filterStatus === "offline" ? "bg-slate-700 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                 }`}
               >
-                Offline - Cek Admin ({offlineCount})
+                Offline ({offlineCount})
               </button>
               <button
                 type="button"
@@ -295,19 +431,222 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
                   filterStatus === "empty" ? "bg-blue-600 text-white" : "bg-blue-50 text-blue-700 hover:bg-blue-100"
                 }`}
               >
-                Port Kosong ({availablePortsCount})
+                Kosong ({availablePortsCount})
               </button>
             </div>
           </div>
 
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-50/80 border border-blue-200/80 text-blue-700 rounded-xl text-xs font-semibold shrink-0">
-            <Radio className="w-3.5 h-3.5 text-blue-600" />
-            <span>Urutan Port Sesuai SmartOLT</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleOpenAddForm()}
+              className="flex sm:hidden items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Tambah User</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenAddForm()}
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5 text-emerald-600" />
+              <span>+ Pasang Pelanggan</span>
+            </button>
           </div>
         </div>
 
-        {/* MODAL BODY (PORT LIST) */}
+        {/* MODAL BODY (PORT LIST OR ADD FORM) */}
         <div className="p-4 sm:p-5 overflow-y-auto flex-1 bg-slate-100/60">
+          
+          {/* FORM TAMBAH PELANGGAN MANUAL */}
+          {showAddForm && (
+            <div className="mb-4 bg-white border-2 border-emerald-500/80 rounded-2xl p-4 sm:p-5 shadow-lg space-y-4 animate-in fade-in duration-200">
+              <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
+                    <Plus className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Tambah Pelanggan Baru ke Port ODP
+                    </h3>
+                    <p className="text-[11px] text-slate-500">
+                      Colokkan ONU pelanggan secara manual ke port yang tersedia di {currentOdp.name}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowAddForm(false)}
+                  className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {formError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-700 font-semibold flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+                  <span>{formError}</span>
+                </div>
+              )}
+
+              {formSuccess && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-semibold flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+                  <span>{formSuccess}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleSaveCustomer} className="space-y-3.5 text-xs">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Nomor Port */}
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Nomor Port ODP <span className="text-rose-500">*</span>
+                    </label>
+                    <select
+                      value={formPort}
+                      onChange={(e) => setFormPort(Number(e.target.value))}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-500"
+                    >
+                      {Array.from({ length: currentOdp.totalPorts }, (_, i) => i + 1).map((p) => {
+                        const isUsed = customers.some(c => c.port === p);
+                        return (
+                          <option key={p} value={p}>
+                            Port {p} {isUsed ? "(Terisi - akan ditimpa)" : "(Kosong)"}
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+
+                  {/* Nama Pelanggan */}
+                  <div className="sm:col-span-2">
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Nama Pelanggan <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Contoh: Bpk. Bambang Sutrisno / Warung Berkah"
+                      value={formName}
+                      onChange={(e) => setFormName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 font-medium"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Status ONU */}
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Status Koneksi Port
+                    </label>
+                    <select
+                      value={formStatus}
+                      onChange={(e) => setFormStatus(e.target.value as CustomerStatus)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="online">🟢 Online</option>
+                      <option value="los">🔴 LOS (Kabel Optik)</option>
+                      <option value="offline">⚪ Offline (Cek Admin)</option>
+                      <option value="dyinggasp">🟡 Dying Gasp (Power Loss)</option>
+                    </select>
+                  </div>
+
+                  {/* Serial Number (SN) */}
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Serial Number (SN) ONU
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="ZTEG12345678 / HWTC12345678"
+                      value={formOnuSn}
+                      onChange={(e) => setFormOnuSn(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono font-medium text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  {/* Model ONU */}
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Model ONU / ONT
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="ZTE F609 / ZTE F670L / Huawei HG8245"
+                      value={formOnuModel}
+                      onChange={(e) => setFormOnuModel(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 font-medium"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Paket Langganan */}
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Paket Internet
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="30 Mbps Home / 50 Mbps Pro"
+                      value={formPackage}
+                      onChange={(e) => setFormPackage(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  {/* Alamat Pelanggan */}
+                  <div>
+                    <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                      Alamat / Catatan Lokasi
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Jl. Melati No. 12, RT 03/05"
+                      value={formAddress}
+                      onChange={(e) => setFormAddress(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowAddForm(false)}
+                    className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition-colors cursor-pointer"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold transition-all shadow-sm cursor-pointer flex items-center gap-1.5 disabled:opacity-60"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Menyimpan...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Simpan Pelanggan ke Port</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
           {filteredPorts.length === 0 ? (
             <div className="p-8 bg-white border border-slate-200 rounded-2xl text-center space-y-2">
               <Info className="w-8 h-8 text-slate-400 mx-auto" />
@@ -320,7 +659,7 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
                 const isOccupied = !!customer;
                 const status = customer?.status;
 
-                let borderCol = "border-slate-200 hover:border-slate-300";
+                let borderCol = "border-slate-200 hover:border-slate-300 bg-white";
                 let portBadgeCol = "bg-slate-800 text-white";
 
                 if (isOccupied) {
@@ -408,35 +747,72 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
                       </div>
                     </div>
 
-                    {/* Right: Technical Device Info (SN & Model only - Redaman, Paket, Catatan are removed) */}
-                    {isOccupied ? (
-                      <div className="flex-1 flex flex-wrap items-center justify-start md:justify-end gap-2 text-xs">
-                        <div className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-[11px] flex items-center gap-1.5">
-                          <span className="text-slate-400 font-semibold text-[9px]">SN:</span>
-                          <span className="font-mono font-bold text-slate-800 truncate max-w-[140px]" title={customer.onuSn}>
-                            {customer.onuSn || "-"}
-                          </span>
-                        </div>
-
-                        <div className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-[11px] flex items-center gap-1.5">
-                          <span className="text-slate-400 font-semibold text-[9px]">Model:</span>
-                          <span className="font-bold text-slate-700 truncate max-w-[130px]">
-                            {customer.onuModel || "ZTE F609"}
-                          </span>
-                        </div>
-
-                        {customer.address && (
-                          <div className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-[11px] flex items-center gap-1 text-slate-600 max-w-full truncate">
-                            <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
-                            <span className="truncate max-w-[200px]" title={customer.address}>{customer.address}</span>
+                    {/* Right: Technical Device Info & Actions */}
+                    <div className="flex-1 flex flex-wrap items-center justify-start md:justify-end gap-2 text-xs">
+                      {isOccupied ? (
+                        <>
+                          <div className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-[11px] flex items-center gap-1.5">
+                            <span className="text-slate-400 font-semibold text-[9px]">SN:</span>
+                            <span className="font-mono font-bold text-slate-800 truncate max-w-[130px]" title={customer.onuSn}>
+                              {customer.onuSn || "-"}
+                            </span>
                           </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="text-[11px] text-slate-400 italic">
-                        Port siap digunakan untuk pemasangan baru
-                      </div>
-                    )}
+
+                          <div className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-[11px] flex items-center gap-1.5">
+                            <span className="text-slate-400 font-semibold text-[9px]">Model:</span>
+                            <span className="font-bold text-slate-700 truncate max-w-[120px]">
+                              {customer.onuModel || "ZTE F609"}
+                            </span>
+                          </div>
+
+                          {customer.address && (
+                            <div className="bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-[11px] flex items-center gap-1 text-slate-600 max-w-[180px] truncate">
+                              <MapPin className="w-3 h-3 text-slate-400 shrink-0" />
+                              <span className="truncate" title={customer.address}>{customer.address}</span>
+                            </div>
+                          )}
+
+                          {/* Tombol Cabut / Ganti Pelanggan */}
+                          {deletingCustomerId === customer.id ? (
+                            <div className="flex items-center gap-1 bg-rose-50 border border-rose-300 p-1 rounded-lg">
+                              <span className="text-[10px] text-rose-800 font-bold px-1">Cabut?</span>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteCustomer(customer.id)}
+                                className="px-2 py-0.5 bg-rose-600 hover:bg-rose-700 text-white rounded text-[10px] font-bold cursor-pointer"
+                              >
+                                Ya
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setDeletingCustomerId(null)}
+                                className="px-2 py-0.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded text-[10px] font-bold cursor-pointer"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDeletingCustomerId(customer.id)}
+                              className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                              title="Cabut / Lepas pelanggan dari port ini"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenAddForm(port)}
+                          className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold transition-all shadow-2xs cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Plus className="w-3.5 h-3.5 text-emerald-600" />
+                          <span>Pasang Pelanggan di Port {port}</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -447,20 +823,32 @@ export default function OdpCustomerModal({ odp, isOpen, onClose }: OdpCustomerMo
         {/* MODAL FOOTER */}
         <div className="p-3 sm:px-5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 shrink-0">
           <div className="flex items-center gap-2 font-medium">
-            <span className="font-bold text-slate-700">{odp.name}</span>
+            <span className="font-bold text-slate-700">{currentOdp.name}</span>
             <span>•</span>
-            <span>Total {odp.totalPorts} Port</span>
+            <span>Total {currentOdp.totalPorts} Port</span>
             <span>•</span>
-            <span className="text-blue-700 font-semibold">{customers.length} ONU Terpasang di SmartOLT</span>
+            <span className="text-emerald-700 font-semibold">{customers.length} Port Terpasang</span>
+            <span>•</span>
+            <span className="text-blue-700 font-semibold">{availablePortsCount} Port Kosong</span>
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-2xs"
-          >
-            Tutup
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleOpenAddForm()}
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-2xs flex items-center gap-1.5"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Tambah Pelanggan Manual</span>
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer shadow-2xs"
+            >
+              Tutup
+            </button>
+          </div>
         </div>
 
       </div>

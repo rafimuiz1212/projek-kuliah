@@ -843,7 +843,7 @@ async function getOSRMRoute(userLat: number, userLng: number, odpLat: number, od
 
 // 4. Check coverage for given coordinates
 app.post("/api/check-coverage", async (req, res) => {
-  const { lat, lng, mode } = req.body;
+  const { lat, lng, mode, targetOdpId } = req.body;
 
   if (lat === undefined || lng === undefined) {
     return res.status(400).json({ error: "Latitude and Longitude are required" });
@@ -864,72 +864,66 @@ app.post("/api/check-coverage", async (req, res) => {
     });
   }
 
-  // 1. Sort ODPs by Haversine distance first to screen candidates quickly
-  const sortedCandidates = odps
-    .map(odp => ({
-      odp,
-      haversineDist: calculateHaversine(userLat, userLng, odp.lat, odp.lng)
-    }))
-    .sort((a, b) => a.haversineDist - b.haversineDist);
+  // 1. Calculate physical Haversine distance to all ODPs
+  const candidates = odps.map(odp => ({
+    odp,
+    haversineDist: calculateHaversine(userLat, userLng, odp.lat, odp.lng)
+  }));
 
-  let nearestOdp: ODP = sortedCandidates[0].odp;
-  let minDistance = sortedCandidates[0].haversineDist;
+  // Sort by true direct physical distance (Euclidean/Haversine)
+  candidates.sort((a, b) => a.haversineDist - b.haversineDist);
+
+  let targetCandidate: { odp: ODP; haversineDist: number };
+  let isTargetLocked = false;
+
+  if (targetOdpId) {
+    const locked = candidates.find(c => c.odp.id === targetOdpId);
+    if (locked) {
+      targetCandidate = locked;
+      isTargetLocked = true;
+    } else {
+      targetCandidate = candidates[0];
+    }
+  } else {
+    // In FTTH drop cabling, the physically closest ODP is the primary distribution point.
+    // If the closest ODP is completely full (availablePorts === 0), check if there is an alternative
+    // with available ports that is physically very close (within 35 meters). Otherwise stick to closest.
+    const closest = candidates[0];
+    if (closest.odp.availablePorts === 0) {
+      const availableNearby = candidates.find(
+        c => c.odp.availablePorts > 0 && c.haversineDist <= closest.haversineDist + 35
+      );
+      targetCandidate = availableNearby || closest;
+    } else {
+      targetCandidate = closest;
+    }
+  }
+
+  const nearestOdp = targetCandidate.odp;
+  const directDistance = Math.round(targetCandidate.haversineDist);
+  let finalDistance = directDistance;
+  let isRoadRoute = false;
+  let isDetourAvoided = false;
   let routeGeometry: { lat: number; lng: number }[] = [
     { lat: userLat, lng: userLng },
     { lat: nearestOdp.lat, lng: nearestOdp.lng }
   ];
-  let isRoadRoute = false;
 
-  // Only use OSRM routing if mode is not explicitly "straight"
-  if (mode !== "straight") {
-    // Realistic candidate filtering for FTTH drop cables:
-    // Always calculate road route for closest candidate up to 10km, and at most 1 close alternative
-    const closestDist = sortedCandidates[0].haversineDist;
-    const candidatesToRoute = sortedCandidates
-      .filter((c, idx) => {
-        if (idx === 0) return c.haversineDist <= 10000;
-        return c.haversineDist <= closestDist + 300 && c.haversineDist <= 3000;
-      })
-      .slice(0, 2);
-
-    if (candidatesToRoute.length > 0) {
-      try {
-        const routePromises = candidatesToRoute.map(async (candidate) => {
-          const routeResult = await getOSRMRoute(userLat, userLng, candidate.odp.lat, candidate.odp.lng);
-          return {
-            candidate,
-            routeResult
-          };
-        });
-
-        const routeResults = await Promise.all(routePromises);
-        const validRoutes = routeResults.filter(r => r.routeResult !== null);
-
-        if (validRoutes.length > 0) {
-          // Find the candidate with the shortest walking/road distance
-          let bestRoute = validRoutes[0];
-          for (const r of validRoutes) {
-            if (r.routeResult!.distance < bestRoute.routeResult!.distance) {
-              bestRoute = r;
-            }
-          }
-
-          nearestOdp = bestRoute.candidate.odp;
-          minDistance = bestRoute.routeResult!.distance;
-          routeGeometry = bestRoute.routeResult!.routeCoords;
-          isRoadRoute = true;
-        }
-      } catch (error) {
-        console.error("Failed to fetch OSRM road routes, falling back to Haversine straight lines:", error);
-      }
+  // Always calculate and strictly use OSRM road route along streets/gangs
+  try {
+    const osrmResult = await getOSRMRoute(userLat, userLng, nearestOdp.lat, nearestOdp.lng);
+    if (osrmResult && osrmResult.routeCoords && osrmResult.routeCoords.length > 0) {
+      finalDistance = osrmResult.distance;
+      isRoadRoute = true;
+      routeGeometry = osrmResult.routeCoords;
     }
+  } catch (error) {
+    console.warn("OSRM routing failed:", error);
   }
 
-  const distanceInMeters = Math.round(minDistance);
   let status = "BELUM TERCOVER";
-
   if (nearestOdp) {
-    if (distanceInMeters <= 300) {
+    if (finalDistance <= 300) {
       if (nearestOdp.availablePorts > 0) {
         status = "TERCOVER";
       } else {
@@ -942,8 +936,11 @@ app.post("/api/check-coverage", async (req, res) => {
     status,
     userCoords: { lat: userLat, lng: userLng },
     nearestOdp,
-    distance: distanceInMeters,
+    distance: finalDistance,
+    directDistance,
     isRoadRoute,
+    isDetourAvoided,
+    isTargetLocked,
     routeGeometry
   });
 });
