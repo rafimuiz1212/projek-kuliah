@@ -1951,10 +1951,6 @@ export default function App() {
             </h1>
             <p className="text-xs text-slate-500 flex flex-wrap items-center gap-1.5">
               <span>Cek jangkauan Optical Distribution Point (Maksimal 300 Meter)</span>
-              <span className="hidden md:inline text-slate-300">•</span>
-              <span className="text-emerald-600 font-semibold bg-emerald-50/70 border border-emerald-100 px-1.5 py-0.5 rounded text-[10px]">
-                Developed by Rafi Muiz NOC
-              </span>
             </p>
           </div>
         </div>
@@ -4020,16 +4016,13 @@ export default function App() {
               </div>
             )}
 
-            {/* Developer Credit Footer */}
+            {/* Footer */}
             <div className="pt-4 mt-auto border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400 font-medium shrink-0">
               <span className="flex items-center gap-1.5 font-semibold text-slate-600">
                 <Network className="w-3.5 h-3.5 text-blue-600" />
                 <span>ODP Coverage Checker v2.0</span>
               </span>
-              <span className="flex items-center gap-1">
-                <span>Developed by</span>
-                <span className="font-extrabold text-slate-600 bg-slate-100/80 px-1.5 py-0.5 rounded">Rafi Muiz NOC</span>
-              </span>
+              <span className="text-slate-400">FTTH Fiber System</span>
             </div>
 
            </div>
@@ -4322,7 +4315,7 @@ export default function App() {
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-400">
-                      Kelola Database ODP • Integrasi SmartOLT/GenieACS • Developed by Rafi Muiz NOC
+                      Kelola Database ODP • Integrasi SmartOLT/GenieACS
                     </p>
                   </div>
                 </div>
@@ -4845,10 +4838,10 @@ export default function App() {
                       </form>
                     </div>
 
-                    {/* Developer Credit Info */}
+                    {/* System Info */}
                     <div className="p-4 bg-slate-100/70 border border-slate-200 rounded-2xl text-[11px] text-slate-500 flex items-center justify-between">
                       <span>ODP Coverage Checker Admin Engine</span>
-                      <span className="font-bold text-slate-700">Developed by Rafi Muiz NOC</span>
+                      <span className="font-bold text-slate-700">v2.0 Active</span>
                     </div>
 
                   </div>

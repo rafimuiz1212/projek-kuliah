@@ -446,7 +446,7 @@ export default function ManualBookModal({ isOpen, onClose }: ManualBookModalProp
         {/* Modal Footer */}
         <div className="p-4 bg-slate-100 border-t border-slate-200 flex items-center justify-between shrink-0">
           <div className="text-[11px] text-slate-500 font-medium">
-            Dikembangkan oleh <strong className="text-slate-700">Rafi Muiz NOC</strong>
+            Buku Panduan Operasional ODP Coverage Checker
           </div>
           <button
             onClick={onClose}
